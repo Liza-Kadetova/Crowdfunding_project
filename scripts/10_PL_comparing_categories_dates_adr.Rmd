@@ -1,0 +1,365 @@
+---
+title: "Краудфандинг: сравнение скорости в зависимости от темы, месяца и адресата."
+output: html_document
+df_print: paged
+---
+
+---
+See html with all outputs, plots and comments here:
+  https://liza-kadetova.github.io/Crowdfunding_project/scripts/2.1._PL_some_stats_tfidf_R.html
+---
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(rstatix)
+library(ggplot2)
+library(tidyverse)
+library(ggpubr)
+library(car)
+library(coin)
+library(dplyr)
+```
+
+#### Импорт данных
+```{r message=FALSE, warning=FALSE, include=TRUE, paged.print=FALSE}
+setwd("/Users/liza/PycharmProjects/Planeta_project/")
+plset <- read.csv("plset_ver_014.csv", sep=";")
+plset$Rate <- as.numeric(as.character(plset$Rate))
+glimpse(plset) # структура датасета: 2031 запись
+```
+
+## Категории
+
+Посмотрим на графики всех категорий с логарифмированными значениями Rate (без log из-за очень большого размаха график ненагляден). Rate, переменная, которая нас интересует, = скорость сбора = итоговая сумма/количество дней. 
+
+```{r fig.width=10}
+# in R log is the natural logarithm 
+# we use Rate+1 because log can't be applied to 0 (0-значения становятся non-finite и boxplot их выбрасывает)
+ggplot(plset, aes(x=as.factor(Category), y=log(Rate+1))) + 
+  geom_boxplot(outlier.size=1.5,outlier.colour="black", aes(fill = Category)) +
+  theme(legend.title = element_blank())+xlab("") +ylab("Natural logarithm of $Rate")+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+```
+
+Боксплоты (диаграммы размаха) дают общее впечатление, что медианы в разных категориях отличаются,
+но утверждать, что эти различии значимы, мы не можем, для этого нужны тесты (далее). Для сравнения нескольких групп данных используется ANOVA (Analysis Of Variance, дисперсионный анализ) — метод в математической статистике, направленный на поиск зависимостей в данных путем исследования значимости различий в средних значениях. В отличие от t-критерия, позволяет сравнивать средние значения трех и более групп. Но для этого данные должны соответствовать нескольким параметрам. The ANOVA test makes the following assumptions about the data:
+
+1. Independence of the observations. Each subject should belong to only one group. There is no relationship between the observations in each group. Having repeated measures for the same participants is not allowed.
+2. No significant outliers in any cell of the design
+3. Normality. the data for each design cell should be approximately normally distributed.
+4. Homogeneity of variances. The variance of the outcome variable should be equal in every cell of the design.
+
+#### 1. Независимость наблюдений
+Наши наблюдения независимы друг от друга (п.1).
+
+#### 2. Выбросы
+
+```{r paged.print=TRUE}
+# Оставим несколько колонок для работы, иначе неудобно смотреть на вывод
+plset_edited <- plset # копируем ориг. датасет, чтобы он не изменялся при фильтрации
+plset_short <- plset_edited %>% # присвоение сначала меняет ориг. сет, потом кладет его в переменную
+  select(Title, Category, Rate) 
+glimpse(plset_short)
+```
+```{r paged.print=TRUE}
+range(plset$Rate)
+IQR(plset$Rate) # межквартильный рахмах
+```
+
+```{r paged.print=FALSE}
+zeros <- plset[plset$Rate < 10,] # сборы меньше 10 руб. все нулевые, хотя длительность проекта большая
+count(zeros) # можно вывести в отдельном окне как таблицу и сортировать колонки
+```
+```{r paged.print=FALSE}
+fast <- plset[plset$Rate > 10000,] # 83 проекта
+count(fast)
+```
+
+```{r}
+#Можно посмотреть на отдельные категории:
+items <- plset[plset$Category=="заключенные",]
+hist(items$Rate)
+```
+
+Размах данных 0-59380 рублей в день. Но основные данные лежат между 0 и 10.000. Встает вопрос: нужно ли избавляться от части данных вручную, то есть по выбранным границам, или вычислить и удалить выбросы. Сборы со скоростью < 10 р\\день скорее можно считать "маргинальными" (что-то пошло не так), а вот данные от 10.000 до 60.000 в день хоть и выдающиеся, но скорее не маргинальные: скорость в этом промежутке возрастает сравнительно плавно. Кроме того, в этом промежутке есть и малочисленные категории, поэтому если его удалить полностью, то наблюдений останется совсем мало. То есть скорее всего, стоит убрать часть данных "с нижнего края" и оставить верхний. Но посмотрим, как будут 
+посчитаны выбросы.
+
+```{r echo=TRUE, paged.print=TRUE}
+# identify the outliers:
+
+#plset_short %>%
+  #identify_outliers(Rate) # 189 штук
+
+# Это код выводит список выбросов, но у R markdown сейчас глюк с постраничным выводом таблиц, поэтому код закомменчен
+```
+```{r}
+# или так:
+outliers <- boxplot(plset_short$Rate)$out # save the outliers in a vector
+length(outliers) # 189 штук, да, выбросы начинаются с 5000
+range(outliers) # 5420-59380!
+```
+
+Итак, автоматическое вычисление выбросов делает ровно обратное тому, что нам нужно: нулевые сборы не попадают в выбросы, а быстрые попадают. Поэтому не будем удалять статистические выбросы, а срежем данные по границам с точки зрения здравого смысла. 
+```{r}
+# Уберем экстремально медленные:
+plset_short <- plset_short[plset_short$Rate > 10, ]
+glimpse(plset_short) # осталось 1923 записи, похоже на правду
+```
+```{r fig.width=10}
+# посмотрим, как изменились боксплоты по категориям 
+ggplot(plset_short, aes(x=as.factor(Category), y=log(Rate+1))) + 
+  geom_boxplot(outlier.size=1.5,outlier.colour="black", aes(fill = Category)) +
+  theme(legend.title = element_blank())+xlab("") +ylab("")+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+```
+
+#### 3. Третье требование anova: как распределены данные.
+
+```{r}
+hist(plset_short$Rate, col = 'blue2') # ориг. данные
+log_rate <- log(plset_short$Rate) 
+hist(log_rate, col = 'blue3') # логарифмированные
+```
+```{r paged.print=FALSE}
+# Computing Shapiro-Wilk test. If the data is normally distributed, the p-value should be greater than 0.05.
+shapiro_test(plset_short$Rate) 
+#p-value космически маленький, то есть мы можем отвергунть НГ, что данные распр. нормально
+```
+```{r paged.print=TRUE}
+# Computing Shapiro-Wilk test for each group level separately
+plset_short %>%
+  group_by(Category) %>%
+  shapiro_test(Rate)
+```
+По тесту Шапиро-Уилка получается, что данные распределены ненормально. Но проверим на qq-графиках. If a sample size is greater than 50, the normal QQ plot is preferred because at larger sample sizes the **Shapiro-Wilk test becomes very sensitive even to a minor deviation from normality**.
+
+```{r}
+# квантиль-квантиль графики
+qqPlot(plset_short$Rate, col="pink", col.lines="steelblue") # не очень нормально :(
+# другой способ построения qq-графика
+model <- lm(Rate ~ Category, data = plset_short)
+ggqqplot(residuals(model))
+
+# Let's also Create QQ plots for each group level
+ggqqplot(plset_short, "Rate", facet.by = "Category")
+```
+
+На qq-графиках по каждой категории уже есть претензия на нормальность. Если бы мы избавились от верхних выбросов, то было бы еще нормальнее. Но сомнения все-таки есть. 
+
+#### 4. Гомогенность дисперсий
+Ее можно оценить с помощью теста Левена. H0: variances are equal (called homogeneity of variance).
+```{r paged.print=FALSE}
+plset_short %>% levene_test(Rate ~ Category) # p-value 0.113 не можем отвергнуть Н0, то есть дисперсии можно считать одинаковыми
+```
+Итак. Наши данные независимы и дисперсии гомогенны, но есть выбросы и сомнения насчет нормальности распределения. В случае когда требования для anova не выполняются, рекомендуется ипользовать ее непараметрический аналог для однофакторного (one-way) сравнения - тест Краскела-Уоллиса. A non-parametric test (sometimes called a distribution free test) does not assume anything about the underlying distribution (for example, that the data comes from a normal distribution). That’s compared to parametric test, which makes assumptions about a population’s parameters (for example, the mean or standard deviation). Kruskal-Wallis test extends the two-samples Wilcoxon (Mann-Whitney) test in the situation where there are more than two groups to compare. H0: (population) medians are equal. H1: (population) medians are not equal.
+  
+Note: kruskal_test function was masked out by the same-name function in the coin package (got massage when loading). But we need it from rstatix as it is pipe-friendly. So we have to specify it before using with ::  [More about it.](https://stackoverflow.com/questions/35240971/what-are-the-double-colons-in-r/35241015#35241015)
+
+```{r paged.print=TRUE}
+plset_short %>% rstatix::kruskal_test(Rate ~ Category)
+```
+Получаем p-value 6.39e-21 то есть почти ноль, можем отклонить гипотезу, что медианы равны. Но насколько сильно они отличаются?
+```{r echo=TRUE, paged.print=FALSE}
+plset_short %>% kruskal_effsize(Rate ~ Category) # получаем moderate
+```
+The interpretation values commonly published in literature are: 0.01- < 0.06 (small effect), 0.06 - < 0.14 (moderate effect) and >= 0.14 (large effect). В наших данных получилось moderate. Sо from the output of the Kruskal-Wallis test, we know that there is a significant difference between groups, but we don’t know which pairs of groups are different. A significant Kruskal-Wallis test is generally followed up by Dunn’s test to identify which groups are different.
+
+Применим тест Данна. В параметрах можно указывать поправку на множественные сравнения. Самая жесткая поправка - это поправка Бонферрони. Она нужна, чтобы если делается много текстов, не накапливалась ошибка первого рода. Уровень значимости делится на число сравнений, эта откорректированная величина используется вместо обычных 5% для того, чтобы решать, значимы результаты теста или не значимы. После поправки Бонферрони есть риск не обнаружить различия там, где они есть (ошибка второго рода). В нашем случае стогость уместна.
+
+```{r}
+dunn <- plset_short %>% 
+  dunn_test(Rate ~ Category, p.adjust.method = "bonferroni")
+dunn
+```
+В выдаче мы видим: что с чем сравнивалось, какой получился уровень различий (с поправкой и без), является это ли это значимым (signif), а также z-статистику. The value of the z-score tells you how many standard deviations you are away from the mean. If a z-score is equal to 0, it is on the mean. A positive z-score indicates the raw score is higher than the mean average. For example, if a z-score is equal to +1, it is 1 standard deviation above the mean. В нашем случае (как я это поняла) имеется в виду количество ст. откл. медианы второй категории в паре от медианы первой. Получается, что значимые отличия есть в 10 парах сравнений. То есть можно сделать вывод, что на примере конкретных данных определенные темы успешнее других. Это были эксперименты с данными, откуда мы удалили слишком медленные сборы, по своему усмотрению, но не удаляли выбросы. Попробуем те же тесты на датасете без выбросов.
+
+```{r paged.print=FALSE}
+plset_short_out <- plset_short # создадим нов. переменную, иначе перезапишется осн. датасет
+plset_short_out <- plset_short_out[-which(plset_short_out$Rate %in% outliers),] #This vector is to be excluded from our dataset.
+kruskal_out <- plset_short_out %>% rstatix::kruskal_test(Rate ~ Category)
+kruskal_out 
+# Повторим тест Данна на этих данных (без выбросов)
+plset_short_out %>% kruskal_effsize(Rate ~ Category)
+dunn_out <- plset_short_out %>% 
+  dunn_test(Rate ~ Category, p.adjust.method = "bonferroni") 
+```
+Итог. На данных без выбросов результаты тестов почти те же. К парам категорий, где есть значимые различия, добавились еще 4 пары (всего 14 пар категорий, чьи различия призаны значимыми). Возможно, если выбрать более мягкий способ поправки, будет еще больше начимых различий. Попробуем все-таки anova на данных без выбросов.
+```{r}
+aov <- plset_short_out %>% 
+  anova_test(Rate ~ Category)
+aov
+```
+The null hypothesis in ANOVA is always that there is no difference in means. Мы получили p-value значительно меньше 0.05, поэтому можем отвергнуть решение, что разницы средних между категориями нет. То есть анова подтвердила то, что показал тест Краскела-Уоллиса ранее. The column ges (generalized effect size) corresponds to the generalized eta squared (effect size). It measures the proportion of the variability in the outcome variable that can be explained in terms of the predictor. An effect size of 0.26 (26%) means that 26% of the change in the variable can be accounted for the predictor conditions. В нашем случае получилось около 6%.\
+
+Тест Тьюки показывает попарное сравнение (как тест Данна для Краскела).
+```{r paged.print=TRUE}
+tuk <- plset_short_out %>% 
+  tukey_hsd(Rate ~ Category)
+tuk 
+# в R можно посмотреть в отдельной вкладке и отсортировать по значимости
+```
+The output contains the following columns:
+
+* estimate: estimate of the difference between means of the two groups
+* conf.low, conf.high: the lower and the upper end point of the confidence interval at 95% (default)
+* p.adj: p-value after adjustment for the multiple comparisons.
+
+Итог: 12 значимых пар. То есть anova на данныз без выбросов дает результат между тестом Данна на данных с выбросами и без. Итоги сравнения сопоставлены в отдельной таблице.
+
+* категория *животные* попала в 9 пар, признанных всеми тремя тестами (анова\\тьюки, краскел\\данн на данных с выбросами и без) различающимися статистически значимо. Во всех эти парах сравнение в пользу животных (что соответствует графику с ящиками, где животные "выше всех" по медиане).  
+* *дети_лечение_реабилитация* по всем тестам выигрывает у "развитие_нко"  
+* *пожилые_ветераны*, *взрослые_лечение_реабилитация*, *паллиатив_уход* - по разным тестам (не по всем) также выигрывают у *развитие_нко*  
+
+![См. таблицу.](/Users/liza/Desktop/Screenshot 2020-06-26 at 23.03.08.png) 
+-----
+## Сезонность и совместное влияние длины текста и месяца начала сбора на скорость
+
+```{r}
+# новый сабсет
+plset_month <- plset
+plset_month <- plset_month %>%
+  select(Briefly, Started, Finished, LengthWd, Rate)
+
+# чистим колонки начала и конца сбора от дат
+plset_month <- plset_month %>% 
+  mutate(Started = str_remove_all(Started, "[^A-z]")) %>% 
+  mutate(Finished = str_remove_all(Finished, "[^A-z]"))
+
+plset_month$Started <- as.factor(plset_month$Started)
+plset_month$Finished <- as.factor(plset_month$Finished)
+
+# Сколько сборов началось в каком месяце:
+st <- plset_month %>% 
+  group_by(Started) %>%
+  summarise(Count = n())
+st
+
+# Сколько сборов закончилось в каком месяце:
+fin <- plset_month %>% 
+  group_by(Finished) %>%
+  summarise(Count = n())
+fin
+
+# Визуализация (месяцы не по порядку, т.к. это просто категории)
+barplot(st$Count, names.arg = st$Started, main='Campaigns started', col = 'blue3')
+barplot(fin$Count, names.arg = fin$Finished, main='Campaigns finished', col = 'yellow3')
+```
+
+```{r}
+ggplot(plset_month, aes(x=as.factor(Started), y=log(Rate+1))) + # in R, log is the natural logarithm.
+  geom_boxplot(outlier.shape = NA,outlier.colour="black", aes(fill = Started)) +
+  theme(legend.title = element_blank())+xlab("") +ylab("Natural logarithm of $Rate")+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+```
+
+Медианы примерно на одном уровне и кажется, что месяцы начала сбора не отражается на скорости сбора. Попробуем two-way Anova (Многофакторный дисперсионный анализ). Он позволяет соонести влияние каждого фактора и их совместное влияние на зависимую переменную. Проверим, как месяц начала и сбора и длина текста (в словах) поодиночке вместе отражаются на скорости. 
+
+```{r}
+
+# Чистим от выбросов по длине тектов 
+outliers_wd <- boxplot(plset_month$LengthWd)$out # save the outliers in a vector
+length(outliers_wd) # сколько выбросов
+range(outliers_wd) # какой размах выбросов
+plset_month <- plset_month[-which(plset_month$LengthWd %in% outliers_wd),] #This vector is to be excluded from our dataset.
+```
+```{r}
+range(plset_month$LengthWd) # размах по длине текстов после удаления выбросов
+IQR(plset_month$LengthWd) 
+hist(plset_month$LengthWd)
+```
+
+```{r}
+# Делим на ранги 1-2-3 по длине текста
+plset_month <- plset_month %>%
+  mutate(L_3 = ifelse(plset_month$LengthWd > 600, 3, 0)) %>%
+  mutate(L_2 = ifelse(plset_month$LengthWd <= 600 & plset_month$LengthWd > 300, 2, 0)) %>%
+  mutate(L_1 = ifelse(plset_month$LengthWd <= 300, 1, 0)) %>%
+  mutate(RankLen = L_1 + L_2 + L_3)
+plset_month <-  plset_month[ , -which(names(plset_month) %in% c("L_3", "L_2", "L_1"))]
+
+# Сначала посмотрим на отдельные взаимосвязи
+
+# Анова Скорость - Длина текста (3 значения)
+aov_wd <- plset_month %>% anova_test(Rate ~ RankLen)
+aov_wd # можно отбр. НГ и допустить, что скорость зависит от длины, но ges очень маленький, см. output
+
+# Анова Скорость - Месяц (12 значений)
+aov_start <- plset_month %>% anova_test(Rate ~ Started)
+aov_start # можно отбр. НГ и допустить, что скорость зависит от месяца, но ges очень маленький, см. output
+
+# Двухфакторный анализ
+
+aov_two <- plset_month %>% anova_test(Rate ~ RankLen*Started)
+aov_two 
+```
+A two-way anova with replication tests three null hypotheses: 1. that the means of observations grouped by one factor are the same; 2. that the means of observations grouped by the other factor are the same; 3. and that there is no interaction between the two factors. The asterisk in the output represents the interaction effect and the main effect of each variable. A significant two-way interaction indicates that the impact that one factor has on the outcome variable depends on the level of the other factor (and vice versa). В нашем случае видно, что длина текста и месяц начала сбора могут иметь небольшой эффект с точки зрения скорости сбора, но они не изменяют влияние друг друга на нее.
+
+
+## Адресные и неадресные сборы
+
+```{r}
+adr_set <- plset
+adr_set <- adr_set %>% select (Title, Adr, Rate)
+
+# Шкала не меняется, а лог. берем от Rate, поэтому выбросов как бы нет 
+
+ggplot(adr_set, aes(x=as.factor(Adr), y=log(Rate+1))) + 
+  geom_boxplot(outlier.size = 1.5, outlier.colour="black", aes(fill = Adr)) +
+  theme(legend.title = element_blank())+xlab("") +ylab("Natural logarithm of $Rate")+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+
+# Для сравнения те же данные на логарифимированной шкале (видим выбросы и реальные цифры)
+ggplot(adr_set, aes(x=as.factor(Adr), y=Rate+1)) + 
+  geom_boxplot(outlier.size = 1.5, outlier.colour="black", aes(fill = Adr)) +
+  theme(legend.title = element_blank())+xlab("") +ylab("Natural logarithm of $Rate")+
+  theme(axis.text.x = element_blank(), axis.ticks = element_blank())+
+  coord_trans(y="log")
+```
+```{r}
+# посмотрим на цифры
+adr_set %>%
+  group_by(Adr) %>%
+  get_summary_stats(Rate, type = "median_iqr") 
+
+median(adr_set$Rate) 
+```
+Общая медиана по Rate в целом = 700 р\\день. На глаз медианы в двух группах не очень отлчичаются (660 (неадр.) и 890 (адр.)). Кажется, нет значимых различий. Но нужно проверить тестами. Для этого нужен двухвыборочный независимый т-тест, если данные соответствуют его требованиям. Проверим данные на соотв. требованиям т-теста:  
+
+* no significant outliers in the two groups
+* the two groups of samples (A and B), being compared, should be normally distributed.
+* the variances of the two groups should not be significantly different. This assumption is made only by the original Student’s t-test. It is relaxed in the Welch’s t-test.
+
+Выбросы.
+```{r}
+# Выбросы
+adr_set %>%
+  group_by(Adr) %>%
+  identify_outliers(Rate)
+```
+
+Распределение.
+Выше мы видели, что в Rate - распределение далеко от нормального. Посмотрим на распределение внутри
+категорий адресный\\неадресный. Когда данных в выборке больше 50, рекомендуется qq-plot, т.к. текст Шапиро-Уилка очень чувствителен к отклонению от норм. распр.
+```{r}
+ggqqplot(adr_set, "Rate", facet.by = "Adr")
+```
+
+Итог, данные не распределены нормально. If the data are not normally distributed, it’s recommended to use a non-parametric test such as Wilcoxon test. This test is similar to the t-test, but focuses on the median rather than the mean. Так как тест Вилкоксона предназначен для связных выборок, то нам подойдет тест Мана-Уитни (расширение теста Вилкоксона, которое иногда назввают тест Манна-Уитни-Уилкоксона или еще Wilcoxon rank sum test). The Wilcoxon rank sum test is a non-parametric alternative to the independent two samples t-test for comparing two independent groups of samples, in the situation where the data are not normally distributed. Synonymous: Mann-Whitney test, Mann-Whitney U test, Wilcoxon-Mann-Whitney test and two-sample Wilcoxon test. Нулевая гипотеза: медианы одиаковые.
+
+```{r}
+stat.test <- adr_set %>% 
+  rstatix::wilcox_test(Rate ~ Adr) %>%
+  add_significance()
+stat.test
+
+effect_adr <- adr_set %>% wilcox_effsize(Rate ~ Adr) # эффект  
+
+```
+
+Получаем p-value 0.00109. Можем отбросить НГ, то есть медианы в двух группах различаются. Но эффект маленький. 
+
+Итак, можно сказать, что разница меду адресными сборами и неадресными есть: адресные сборы в целом более успешны. Но разница между ними не очень существенная.
+
+-----
+Many thanks to DataNovia for these very helpful notes:  
+https://www.datanovia.com/en/lessons/anova-in-r/ \
+https://www.datanovia.com/en/lessons/kruskal-wallis-test-in-r/
