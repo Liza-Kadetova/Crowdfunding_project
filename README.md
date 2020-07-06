@@ -48,7 +48,7 @@ Classic crowdfunding model suggests that a goal or at least a particular benchma
 
 In order to achieve the goal of the study the following objectives were set and reached:
 - to collect and systematise the data needed. The final dataset consists of 2000+ texts (or text id-s) of campaigns with their indicators: target goal, goal achieved, number of transactions, date of closure, date of start, and other variables,
-- to analyse texts for a number of characteristics (see below),
+- to analyse texts for a number of characteristics,
 - to match significantly different characteristics with the success indicators,
 - to find patterns and make assumptions.
 
